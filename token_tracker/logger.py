@@ -1,8 +1,8 @@
 """
 Token Usage Logger Module
 
-Provides comprehensive logging functionality for tracking AI/LLM token usage,
-including file rotation, database storage, cost calculation, and telemetry export.
+Provides logging functionality for tracking AI/LLM token usage,
+
 """
 
 import json
@@ -19,6 +19,7 @@ from enum import Enum
 import hashlib
 import re
 import os
+import tiktoken
 
 try:
     from loguru import logger
@@ -27,16 +28,15 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 from .config import TokenTrackerConfig
-from .exceptions import TokenLoggerError, DatabaseError, ConfigurationError
+from .exceptions import TokenLoggerError, ConfigurationError
 
 
 class TokenSource(Enum):
     """Source of token counting"""
-    API = "api"              # Tokens from API response
-    ESTIMATED = "estimated"  # Estimated from text length
-    TIKTOKEN = "tiktoken"    # Calculated using tiktoken library
-    CUSTOM = "custom"        # Custom token counter
-
+    API = "api"
+    ESTIMATED = "estimated"
+    TIKTOKEN = "tiktoken"
+    CUSTOM = "custom"
 
 class LogLevel(Enum):
     """Log levels for token usage events"""
@@ -51,67 +51,47 @@ class LogLevel(Enum):
 class TokenUsageEntry:
     """Complete token usage log entry"""
 
-    # Core fields
+    # Required fields
     id: str
     timestamp: int
-
-    # User information
-    user_id: Optional[str]
-    user_email: Optional[str]
-    user_ip: Optional[str] = None
-    session_id: Optional[str] = None
-
-    # Model information
     model: str
-    provider: Optional[str]
-    model_version: Optional[str] = None
-    deployment_id: Optional[str] = None
-
-    # Token counts
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    token_source: str = TokenSource.API.value
 
-    # Cost information
+    # Optional fields
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    user_ip: Optional[str] = None
+    session_id: Optional[str] = None
+    provider: Optional[str] = None
+    model_version: Optional[str] = None
+    deployment_id: Optional[str] = None
+    token_source: str = TokenSource.API.value
     prompt_cost: Optional[float] = None
     completion_cost: Optional[float] = None
     total_cost: Optional[float] = None
     currency: str = "USD"
-
-    # Request information
     endpoint: Optional[str] = None
     request_id: Optional[str] = None
-    parent_request_id: Optional[str] = None  # For tracing chains
+    parent_request_id: Optional[str] = None
     conversation_id: Optional[str] = None
-
-    # Performance metrics
     duration_ms: Optional[float] = None
     time_to_first_token_ms: Optional[float] = None
     tokens_per_second: Optional[float] = None
-
-    # Content samples (optional, for debugging)
-    prompt_sample: Optional[str] = None  # First N characters
-    completion_sample: Optional[str] = None  # First N characters
-
-    # Request configuration
+    prompt_sample: Optional[str] = None
+    completion_sample: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     top_p: Optional[float] = None
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
     streaming: bool = False
-
-    # Status and errors
     status: str = "success"
     error_code: Optional[str] = None
     error_message: Optional[str] = None
-
-    # Metadata
     metadata: Optional[Dict[str, Any]] = None
     tags: List[str] = field(default_factory=list)
-
-    # Audit fields
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = None
 
@@ -148,20 +128,20 @@ class PricingManager:
         with self._lock:
             self.pricing_cache = self._load_pricing()
             self.last_update = datetime.utcnow()
-            logger.info(f"Loaded pricing for {len(self.pricing_cache)} providers")
+            logger.info("Loaded pricing for %s providers", {len(self.pricing_cache)})
 
     def _load_pricing(self) -> Dict[str, Any]:
         """Load pricing from various sources"""
         pricing = {}
 
-        # 1. Try loading from file
+        # 1. Loading from file
         if self.config.pricing_file and os.path.exists(self.config.pricing_file):
             try:
                 with open(self.config.pricing_file, 'r') as f:
                     pricing = json.load(f)
-                logger.debug(f"Loaded pricing from file: {self.config.pricing_file}")
+                logger.debug("Loaded pricing from file: %s",  {self.config.pricing_file})
             except Exception as e:
-                logger.error(f"Failed to load pricing file: {e}")
+                logger.error("Failed to load pricing file: %s", {e})
 
         # 2. Override with config pricing
         if self.config.pricing_config:
@@ -196,7 +176,7 @@ class PricingManager:
                 try:
                     pricing[provider][model][price_type] = float(value)
                 except ValueError:
-                    logger.warning(f"Invalid price value for {key}: {value}")
+                    logging.warning("Invalid price value for %s: %s", {key}, {value})
 
         return pricing
 
@@ -371,7 +351,6 @@ class TokenCounter:
 
     def _count_with_tiktoken(self, text: str, model: str) -> int:
         """Count tokens using tiktoken library"""
-        import tiktoken
 
         # Map model to encoding
         encoding_map = {
@@ -463,9 +442,8 @@ class TokenUsageLogger:
         }
 
         # Initialize storage backends
-        self._init_file_backend()
-        self._init_database_backend()
-        self._init_telemetry_backend()
+        self._init_telemetry_backend()  # Always initialize OpenTelemetry
+        self._init_file_backend()       # Optional file logging
 
         # Start background writer thread
         self.writer_thread = threading.Thread(target=self._background_writer, daemon=True)
@@ -476,58 +454,37 @@ class TokenUsageLogger:
 
         logger.info(f"Token usage logger initialized with {len(self._backends)} backends")
 
+    def _init_telemetry_backend(self):
+        """Initialize OpenTelemetry backend (always enabled)"""
+        try:
+            from .telemetry import TelemetryBackend
+            self._telemetry_backend = TelemetryBackend(self.config)
+            logger.info("OpenTelemetry backend initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenTelemetry backend: {e}")
+            self._telemetry_backend = None
+
     def _init_file_backend(self):
-        """Initialize file logging backend"""
+        """Initialize optional file logging backend"""
         self._file_backend = None
 
-        if self.config.log_file_path:
+        if self.config.file_logging_enabled and self.config.log_file_path:
             try:
                 log_path = Path(self.config.log_file_path)
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 self._file_backend = log_path
-                logger.debug(f"File backend initialized: {log_path}")
+                logger.info(f"File backend initialized: {log_path}")
             except Exception as e:
                 logger.error(f"Failed to initialize file backend: {e}")
-
-    def _init_database_backend(self):
-        """Initialize database backend if configured"""
-        self._db_backend = None
-
-        if self.config.db_enabled and self.config.db_url:
-            try:
-                # Lazy import to avoid dependency if not used
-                from .database import DatabaseBackend
-                self._db_backend = DatabaseBackend(self.config.db_url)
-                logger.debug("Database backend initialized")
-            except ImportError:
-                logger.warning("Database backend requested but dependencies not installed")
-            except Exception as e:
-                logger.error(f"Failed to initialize database backend: {e}")
-
-    def _init_telemetry_backend(self):
-        """Initialize telemetry/metrics backend if configured"""
-        self._telemetry_backend = None
-
-        if self.config.otel_enabled:
-            try:
-                from .telemetry import TelemetryBackend
-                self._telemetry_backend = TelemetryBackend(self.config)
-                logger.debug("Telemetry backend initialized")
-            except ImportError:
-                logger.warning("Telemetry backend requested but dependencies not installed")
-            except Exception as e:
-                logger.error(f"Failed to initialize telemetry backend: {e}")
 
     @property
     def _backends(self) -> List[str]:
         """Get list of active backends"""
         backends = []
+        if self._telemetry_backend:
+            backends.append("opentelemetry")
         if self._file_backend:
             backends.append("file")
-        if self._db_backend:
-            backends.append("database")
-        if self._telemetry_backend:
-            backends.append("telemetry")
         return backends
 
     def log_token_usage(
@@ -714,7 +671,16 @@ class TokenUsageLogger:
 
     def _write_entry(self, entry: TokenUsageEntry):
         """Write entry to all configured backends"""
-        # Write to file
+
+        # Primary: Send to OpenTelemetry
+        if self._telemetry_backend:
+            try:
+                self._telemetry_backend.record_metrics(entry)
+                self._telemetry_backend.create_span(entry)
+            except Exception as e:
+                logger.error(f"Failed to send telemetry: {e}")
+
+        # Optional: Write to file
         if self._file_backend:
             try:
                 with self.write_lock:
@@ -723,20 +689,6 @@ class TokenUsageLogger:
                         f.flush()
             except Exception as e:
                 logger.error(f"Failed to write to file: {e}")
-
-        # Write to database
-        if self._db_backend:
-            try:
-                self._db_backend.write(entry)
-            except Exception as e:
-                logger.error(f"Failed to write to database: {e}")
-
-        # Send to telemetry
-        if self._telemetry_backend:
-            try:
-                self._telemetry_backend.send(entry)
-            except Exception as e:
-                logger.error(f"Failed to send telemetry: {e}")
 
     def _background_writer(self):
         """Background thread for async writing"""
@@ -802,10 +754,6 @@ class TokenUsageLogger:
         # Wait for writer thread
         if hasattr(self, 'writer_thread') and self.writer_thread.is_alive():
             self.writer_thread.join(timeout=5)
-
-        # Close backends
-        if self._db_backend:
-            self._db_backend.close()
 
         if self._telemetry_backend:
             self._telemetry_backend.close()

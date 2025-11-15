@@ -12,11 +12,6 @@ class TokenLoggerError(TokenTrackerError):
     pass
 
 
-class DatabaseError(TokenTrackerError):
-    """Exception raised for database-related errors"""
-    pass
-
-
 class ConfigurationError(TokenTrackerError):
     """Exception raised for configuration-related errors"""
     pass
