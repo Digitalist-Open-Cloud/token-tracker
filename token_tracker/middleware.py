@@ -1,217 +1,382 @@
 import time
 import json
 import uuid
-from typing import Optional, Callable, Any, Dict, MutableMapping, cast
+from typing import Optional, Dict, Any
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
-from starlette.datastructures import Headers
+from starlette.responses import Response, StreamingResponse
+from starlette.types import ASGIApp
 import asyncio
 
-from .logger import TokenUsageLogger
-from .config import TokenTrackerConfig
-
-
 class TokenUsageMiddleware(BaseHTTPMiddleware):
-    """ASGI middleware for token tracking"""
+    """ASGI middleware for token tracking with streaming support"""
 
-    def __init__(self, app, config: Optional[TokenTrackerConfig] = None):
+    def __init__(self, app: ASGIApp, config=None):
         super().__init__(app)
-        self.config = config or TokenTrackerConfig.from_env()
-        self.logger = TokenUsageLogger(self.config)
+        print("=" * 80)
+        print("TokenUsageMiddleware.__init__ called")
 
-        # Log initialization
+        # Import here to avoid circular imports
+        from .config import TokenTrackerConfig
+        from .logger import get_token_logger
+
+        self.config = config or TokenTrackerConfig.from_env()
+        self.logger = get_token_logger(self.config)
+
+        print(f"Config enabled: {self.config.enabled}")
+        print(f"File logging enabled: {self.config.file_logging_enabled}")
+        print(f"Log file path: {self.config.log_file_path}")
+        print(f"OTEL endpoint: {self.config.otel_endpoint}")
+        print(f"Monitored endpoints: {self.config.monitored_endpoints}")
+        print("=" * 80)
+
+        # Test write directly
         if self.config.enabled:
-            print(f"TokenUsageMiddleware initialized - tracking enabled")
-        else:
-            print(f"TokenUsageMiddleware initialized - tracking disabled")
+            self._test_logger()
+
+    def _test_logger(self):
+        """Test the logger directly"""
+        print("Testing logger directly...")
+        try:
+            entry_id = self.logger.log_token_usage(
+                model="test-model",
+                prompt_tokens=10,
+                completion_tokens=20,
+                endpoint="/test",
+                metadata={"test": "init"}
+            )
+            print(f"Test log entry created: {entry_id}")
+        except Exception as e:
+            print(f"Test log failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     async def dispatch(self, request: Request, call_next):
         """Process the request and track token usage"""
+        path = str(request.url.path)
+        method = request.method
 
-        # Skip if not enabled or not a monitored endpoint
-        if not self.config.enabled or not self._should_track(request):
+        print(f"\n>>> Middleware dispatch: {method} {path}")
+
+        # Check if we should track this request
+        should_track = self._should_track(request)
+        print(f"    Should track: {should_track} (enabled={self.config.enabled})")
+
+        if not self.config.enabled or not should_track:
+            print(f"    Skipping tracking")
             return await call_next(request)
 
-        # Capture start time
+        print(f"    TRACKING REQUEST!")
+
+        # Generate request ID
+        request_id = str(uuid.uuid4())
         start_time = time.time()
 
-        # Capture request body
+        # Store request body
         request_body = None
-        if request.method in ["POST", "PUT", "PATCH"]:
+        if method == "POST":
             try:
+                # Read the body
                 body_bytes = await request.body()
                 request_body = body_bytes.decode("utf-8")
-                # Need to reconstruct the request for downstream
-                from starlette.datastructures import State
+                print(f"    Captured request body: {len(body_bytes)} bytes")
 
+                # Parse to check what we got
+                try:
+                    req_data = json.loads(request_body)
+                    print(f"    Model: {req_data.get('model', 'unknown')}")
+                    print(f"    Stream: {req_data.get('stream', False)}")
+                    print(f"    Messages: {len(req_data.get('messages', []))}")
+                except:
+                    pass
+
+                # Create new receive that returns the buffered body
                 async def receive():
-                    return {"type": "http.request", "body": body_bytes}
+                    return {
+                        "type": "http.request",
+                        "body": body_bytes,
+                        "more_body": False,
+                    }
 
                 request._receive = receive
-            except Exception as e:
-                print(f"Failed to capture request body: {e}")
 
-        # Process the request
+            except Exception as e:
+                print(f"    ERROR capturing request: {e}")
+                import traceback
+                traceback.print_exc()
+                return await call_next(request)
+
+        # Call the actual endpoint
+        print(f"    Calling next handler...")
         response = await call_next(request)
+
+        # Get the actual class name
+        response_class = response.__class__.__name__
+        print(f"    Response type: {response_class}")
 
         # Calculate duration
         duration_ms = (time.time() - start_time) * 1000
+        print(f"    Duration: {duration_ms:.2f}ms")
 
-        # For streaming responses, we can't easily capture the body
-        # For now, log what we can
-        if request_body:
-            # Get user info if available
-            user_id = None
-            if hasattr(request.state, "user"):
-                user = request.state.user
-                user_id = getattr(user, "id", None) or getattr(user, "user_id", None)
+        # Get user info
+        user_id = None
+        user_email = None
+        if hasattr(request.state, "user"):
+            user = request.state.user
+            if user:
+                user_id = getattr(user, "id", None)
+                user_email = getattr(user, "email", None)
+                print(f"    User: {user_email} (ID: {user_id})")
 
-            # Process and log
+        # Check if it's a streaming response (including wrapped ones)
+        is_streaming = (
+            isinstance(response, StreamingResponse) or
+            response_class == "_StreamingResponse" or
+            hasattr(response, 'body_iterator')
+        )
+
+        if is_streaming:
+            print(f"    Processing STREAMING response...")
+
+            # Store original iterator
+            original_iterator = response.body_iterator
+            chunks = []
+
+            async def capture_and_forward():
+                print(f"    Starting to capture chunks...")
+                chunk_count = 0
+                try:
+                    async for chunk in original_iterator:
+                        chunk_count += 1
+                        chunks.append(chunk)
+                        yield chunk
+
+                        # Log every 10 chunks to see progress
+                        if chunk_count % 10 == 0:
+                            print(f"    ... {chunk_count} chunks captured")
+
+                    print(f"    Total chunks captured: {chunk_count}")
+
+                    # Process after streaming completes
+                    if request_body and chunks:
+                        try:
+                            full_response = b"".join(chunks).decode("utf-8", errors="ignore")
+                            print(f"    Full response size: {len(full_response)} bytes")
+
+                            # Show first chunk for debugging
+                            if full_response:
+                                first_line = full_response.split('\n')[0][:100]
+                                print(f"    First line: {first_line}")
+
+                            # Log the token usage
+                            self._log_usage(
+                                request_body=request_body,
+                                response_body=full_response,
+                                endpoint=path,
+                                user_id=user_id,
+                                user_email=user_email,
+                                duration_ms=duration_ms,
+                                request_id=request_id
+                            )
+                        except Exception as e:
+                            print(f"    ERROR processing captured response: {e}")
+                            import traceback
+                            traceback.print_exc()
+
+                except Exception as e:
+                    print(f"    ERROR in streaming: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise  # Re-raise to not break the stream
+
+            # Replace the body iterator
+            response.body_iterator = capture_and_forward()
+
+        else:
+            print(f"    Processing REGULAR response...")
+
+            # For regular responses, try to get the body
             try:
-                self.process_request(
-                    request_body=request_body,
-                    response_body="",  # Would need more complex handling for response
-                    endpoint=str(request.url.path),
-                    user_id=user_id,
-                    duration_ms=duration_ms
-                )
+                if hasattr(response, 'body'):
+                    response_body = response.body
+                    if response_body:
+                        response_text = response_body.decode("utf-8", errors="ignore")
+                        print(f"    Response body size: {len(response_text)} bytes")
+
+                        if request_body:
+                            self._log_usage(
+                                request_body=request_body,
+                                response_body=response_text,
+                                endpoint=path,
+                                user_id=user_id,
+                                user_email=user_email,
+                                duration_ms=duration_ms,
+                                request_id=request_id
+                            )
             except Exception as e:
-                print(f"Failed to process token usage: {e}")
+                print(f"    ERROR processing response: {e}")
+                import traceback
+                traceback.print_exc()
 
         return response
 
     def _should_track(self, request: Request) -> bool:
         """Check if this request should be tracked"""
+        if request.method != "POST":
+            return False
+
         path = str(request.url.path).lower()
 
-        # Check excluded endpoints first
+        # Check excluded first
         for excluded in self.config.excluded_endpoints:
             if path.startswith(excluded.lower()):
+                print(f"    Path excluded: {path} matches {excluded}")
                 return False
 
-        # Check monitored endpoints
-        if self.config.monitored_endpoints:
-            for monitored in self.config.monitored_endpoints:
-                if path.startswith(monitored.lower()):
-                    return True
-            return False  # If monitor list exists, only track those
+        # Check monitored
+        for monitored in self.config.monitored_endpoints:
+            if path.startswith(monitored.lower()):
+                print(f"    Path monitored: {path} matches {monitored}")
+                return True
 
-        # Default: track all non-excluded endpoints
-        return True
+        print(f"    Path not in monitored list: {path}")
+        return False
 
-    def process_request(
+    def _log_usage(
         self,
         request_body: str,
         response_body: str,
         endpoint: str,
         user_id: Optional[str] = None,
-        duration_ms: Optional[float] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Process a request/response pair and log token usage"""
-
-        if not self.config.enabled:
-            return None
+        user_email: Optional[str] = None,
+        duration_ms: Optional[float] = None,
+        request_id: Optional[str] = None
+    ):
+        """Log token usage"""
+        print(f"\n    === LOGGING TOKEN USAGE ===")
 
         try:
             # Parse request
-            req_data = json.loads(request_body) if request_body else {}
+            req_data = json.loads(request_body)
             model = req_data.get("model", "unknown")
+            streaming = req_data.get("stream", False)
 
-            # Extract or estimate tokens
-            token_data = self._extract_token_usage(response_body)
+            print(f"    Model: {model}")
+            print(f"    Streaming: {streaming}")
+            print(f"    Response body preview: {response_body[:200]}")
 
-            if not token_data and self.config.estimate_tokens:
-                token_data = self._estimate_tokens(req_data, response_body)
+            # Extract token counts from response
+            token_counts = self._extract_tokens(response_body, streaming)
+            print(f"    Extracted tokens: {token_counts}")
 
-            if token_data:
-                # Extract additional info from request
-                messages = req_data.get("messages", [])
+            # Get completion text
+            completion_text = self._extract_completion(response_body, streaming)
+            print(f"    Completion text length: {len(completion_text)}")
+            if completion_text:
+                print(f"    Completion preview: {completion_text[:100]}")
 
-                # Get current question (last user message)
-                current_question = ""
-                for msg in reversed(messages):
-                    if msg.get("role") == "user":
-                        current_question = msg.get("content", "")
+            # Get prompt text (last user message)
+            prompt_text = ""
+            messages = req_data.get("messages", [])
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        prompt_text = content
                         break
+            print(f"    Prompt text length: {len(prompt_text)}")
 
-                self.logger.log_token_usage(
-                    model=model,
-                    prompt_tokens=token_data["prompt_tokens"],
-                    completion_tokens=token_data["completion_tokens"],
-                    prompt_text=current_question if self.config.store_samples else None,
-                    completion_text=response_body[:500] if self.config.store_samples else None,
-                    user_id=user_id,
-                    endpoint=endpoint,
-                    duration_ms=duration_ms,
-                    streaming=req_data.get("stream", False),
-                    temperature=req_data.get("temperature"),
-                    max_tokens=req_data.get("max_tokens"),
-                    metadata={
-                        "message_count": len(messages),
-                        "streaming": req_data.get("stream", False),
-                    }
-                )
+            # Log via the logger
+            print(f"    Calling logger.log_token_usage()...")
 
-                return token_data
+            entry_id = self.logger.log_token_usage(
+                model=model,
+                prompt_tokens=token_counts.get("prompt_tokens"),
+                completion_tokens=token_counts.get("completion_tokens"),
+                prompt_text=prompt_text if not token_counts.get("prompt_tokens") else None,
+                completion_text=completion_text if not token_counts.get("completion_tokens") else None,
+                user_id=user_id,
+                user_email=user_email,
+                endpoint=endpoint,
+                request_id=request_id,
+                duration_ms=duration_ms,
+                streaming=streaming,
+                temperature=req_data.get("temperature"),
+                max_tokens=req_data.get("max_tokens"),
+                metadata={
+                    "message_count": len(messages),
+                }
+            )
+
+            print(f"    Entry ID: {entry_id}")
+            print(f"    === LOGGING COMPLETE ===\n")
+
+            # Force flush if file logging
+            if self.config.file_logging_enabled:
+                self.logger.flush()
+                print(f"    Flushed to file")
 
         except Exception as e:
-            print(f"Failed to process token usage: {e}")
+            print(f"    ERROR in _log_usage: {e}")
+            import traceback
+            traceback.print_exc()
 
-        return None
-
-    def _extract_token_usage(self, response_body: str) -> Optional[Dict]:
+    def _extract_tokens(self, response_body: str, streaming: bool) -> Dict:
         """Extract token usage from response"""
-        if not response_body:
-            return None
-
         try:
-            resp_data = json.loads(response_body)
-            if "usage" in resp_data:
-                return {
-                    "prompt_tokens": resp_data["usage"].get("prompt_tokens", 0),
-                    "completion_tokens": resp_data["usage"].get("completion_tokens", 0),
-                }
-        except:
-            pass
-        return None
+            if not streaming:
+                data = json.loads(response_body)
+                if "usage" in data:
+                    return {
+                        "prompt_tokens": data["usage"].get("prompt_tokens"),
+                        "completion_tokens": data["usage"].get("completion_tokens")
+                    }
+            else:
+                # For streaming, look in the chunks
+                lines = response_body.split('\n')
+                for line in reversed(lines):
+                    if line.startswith("data: "):
+                        content = line[6:]
+                        if content and content != "[DONE]":
+                            try:
+                                chunk = json.loads(content)
+                                if "usage" in chunk:
+                                    return {
+                                        "prompt_tokens": chunk["usage"].get("prompt_tokens"),
+                                        "completion_tokens": chunk["usage"].get("completion_tokens")
+                                    }
+                            except:
+                                continue
+        except Exception as e:
+            print(f"    Error extracting tokens: {e}")
 
-    def _estimate_tokens(self, request_data: dict, response_body: str) -> Dict:
-        """Estimate tokens when not provided"""
-        # Extract last user message
-        messages = request_data.get("messages", [])
-        prompt_text = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                prompt_text = msg.get("content", "")
-                if isinstance(prompt_text, str):
-                    break
-                prompt_text = ""
+        return {}
 
-        # Extract response
-        completion_text = ""
-        if response_body:
-            try:
-                resp_data = json.loads(response_body)
-                if "choices" in resp_data and resp_data["choices"]:
-                    message = resp_data["choices"][0].get("message", {})
-                    completion_text = message.get("content", "")
-            except:
-                pass
+    def _extract_completion(self, response_body: str, streaming: bool) -> str:
+        """Extract completion text"""
+        try:
+            if not streaming:
+                data = json.loads(response_body)
+                if "choices" in data and data["choices"]:
+                    return data["choices"][0].get("message", {}).get("content", "")
+            else:
+                # For streaming, concatenate chunks
+                parts = []
+                lines = response_body.split('\n')
+                for line in lines:
+                    if line.startswith("data: "):
+                        content = line[6:]
+                        if content and content != "[DONE]":
+                            try:
+                                chunk = json.loads(content)
+                                if "choices" in chunk and chunk["choices"]:
+                                    delta = chunk["choices"][0].get("delta", {})
+                                    if "content" in delta:
+                                        parts.append(delta["content"])
+                            except:
+                                continue
+                return "".join(parts)
+        except Exception as e:
+            print(f"    Error extracting completion: {e}")
 
-        # Use the logger's token counter
-        prompt_tokens = 0
-        completion_tokens = 0
-
-        if hasattr(self.logger, 'token_counter'):
-            prompt_tokens, _ = self.logger.token_counter.count_tokens(prompt_text, request_data.get("model"))
-            completion_tokens, _ = self.logger.token_counter.count_tokens(completion_text, request_data.get("model"))
-        else:
-            # Fallback to simple estimation
-            prompt_tokens = max(1, len(prompt_text) // 4)
-            completion_tokens = max(1, len(completion_text) // 4)
-
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-        }
+        return ""
