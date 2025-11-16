@@ -66,6 +66,7 @@ class TokenTrackerConfig:
         if not self.monitored_endpoints:
             self.monitored_endpoints = [
                 "/api/chat/completions",
+                "/api/chat/completed",
                 "/api/v1/chat/completions",
                 "/chat/completions",
                 "/v1/chat/completions",
@@ -73,15 +74,6 @@ class TokenTrackerConfig:
                 "/v1/completions",
                 "/ollama/api/chat",
                 "/ollama/api/generate",
-            ]
-
-        if not self.excluded_endpoints:
-            self.excluded_endpoints = [
-                "/health",
-                "/metrics",
-                "/docs",
-                "/redoc",
-                "/openapi.json",
             ]
 
     @classmethod

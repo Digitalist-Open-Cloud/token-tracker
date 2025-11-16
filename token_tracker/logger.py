@@ -199,6 +199,7 @@ class PricingManager:
                 "claude-3-opus": {"prompt": 0.015, "completion": 0.075},
                 "claude-3-sonnet": {"prompt": 0.003, "completion": 0.015},
                 "claude-3-haiku": {"prompt": 0.00025, "completion": 0.00125},
+                "claude-3.5-haiku": {"prompt": 0.001, "completion": 0.005},
                 "claude-2.1": {"prompt": 0.008, "completion": 0.024},
                 "claude-2": {"prompt": 0.008, "completion": 0.024},
                 "claude-instant": {"prompt": 0.0008, "completion": 0.0024},
@@ -622,7 +623,27 @@ class TokenUsageLogger:
         """Identify provider from model name and endpoint"""
         model_lower = model.lower()
         endpoint_lower = (endpoint or "").lower()
+        if "gpt-" in model_lower or "text-davinci" in model_lower:
+            return "openai"
+        elif "claude" in model_lower or "anthropic" in model_lower:
+            return "anthropic"
+        elif "gemini" in model_lower or "palm" in model_lower:
+            return "google"
+        elif "command" in model_lower and "cohere" in model_lower:
+            return "cohere"
+        elif "mistral" in model_lower or "mixtral" in model_lower:
+            return "mistral"
+        elif "llama" in model_lower:
+            return "meta"
 
+        if endpoint and "ollama" in endpoint.lower():
+            # Ollama is just the runtime, detect actual model provider
+            if "anthropic" in model_lower or "claude" in model_lower:
+                return "anthropic"
+            elif "openai" in model_lower or "gpt" in model_lower:
+                return "openai"
+            # If can't determine, it's a local model via ollama
+            return "ollama/local"
         # Check endpoint patterns first
         endpoint_patterns = {
             "openai": ["openai", "/v1/chat", "/v1/completions"],
