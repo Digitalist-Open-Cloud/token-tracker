@@ -1,4 +1,8 @@
-# telemetry.py
+"""
+Open Telemetry
+"""
+
+import traceback
 from typing import Any, Optional, Dict
 from opentelemetry import trace, metrics
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -9,7 +13,9 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 
+
 class TelemetryBackend:
+    """Backend for Open Telemetry"""
     def __init__(self, config):
         self.config = config
         self.tracer = None
@@ -24,7 +30,7 @@ class TelemetryBackend:
         self._init_telemetry()
 
     def _init_telemetry(self):
-        """Initialize OpenTelemetry with proper API usage"""
+        """Initialize OpenTelemetry"""
         try:
             # Create resource
             resource = Resource.create({
@@ -89,9 +95,7 @@ class TelemetryBackend:
 
         except Exception as e:
             print(f"TelemetryBackend initialization error: {e}")
-            import traceback
             traceback.print_exc()
-            # Fall back to no-op
             self.tracer = trace.get_tracer(self.config.otel_service_name)
             self.meter = metrics.get_meter(self.config.otel_service_name)
 
@@ -115,7 +119,7 @@ class TelemetryBackend:
                 unit="USD"
             )
 
-            # Duration histogram
+            # Duration
             self.duration_histogram = self.meter.create_histogram(
                 name="token_request_duration",
                 description="Duration of token requests",
@@ -124,7 +128,6 @@ class TelemetryBackend:
 
         except Exception as e:
             print(f"Failed to create metrics: {e}")
-            # Keep them as None if creation fails
             self.token_counter = None
             self.cost_counter = None
             self.duration_histogram = None
@@ -149,8 +152,6 @@ class TelemetryBackend:
                 attributes["user_id"] = entry.user_id
             if entry.client_id:
                 attributes["client_id"] = entry.client_id
-
-            # Add whether samples are present (for metrics analysis)
             if entry.prompt_sample:
                 attributes["has_prompt_sample"] = "true"
             if entry.completion_sample:
@@ -184,9 +185,8 @@ class TelemetryBackend:
             return
 
         try:
-            # Build span attributes
             span_attributes = {
-               "operation_name": "token-tracker",
+                "operation_name": "token-tracker",
                 "model": entry.model,
                 "provider": entry.provider,
                 "prompt_tokens": entry.prompt_tokens,
@@ -208,13 +208,11 @@ class TelemetryBackend:
                 span_attributes["client_id"] = entry.client_id
             # Add prompt sample if present (truncate for span attributes)
             if entry.prompt_sample:
-                # Limit to 1000 chars for span attributes
                 span_attributes["prompt_sample"] = entry.prompt_sample[:1000]
                 span_attributes["prompt_sample_length"] = len(entry.prompt_sample)
 
             # Add completion sample if present (truncate for span attributes)
             if entry.completion_sample:
-                # Limit to 1000 chars for span attributes
                 span_attributes["completion_sample"] = entry.completion_sample[:1000]
                 span_attributes["completion_sample_length"] = len(entry.completion_sample)
 

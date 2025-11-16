@@ -1,7 +1,5 @@
 """
-Token Usage Logger Module
-
-Provides functionality for tracking AI/LLM token usage.
+Logger for token usage
 
 """
 

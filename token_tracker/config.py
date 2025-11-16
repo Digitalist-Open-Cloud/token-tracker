@@ -15,7 +15,7 @@ class TokenTrackerConfig:
     enabled: bool = True
     client_id: Optional[str] = None
 
-    # OpenTelemetry configuration (always on)
+    # OpenTelemetry configuration
     otel_service_name: str = "token-tracker"
     otel_endpoint: Optional[str] = None
     otel_headers: Dict[str, str] = field(default_factory=dict)
@@ -41,7 +41,7 @@ class TokenTrackerConfig:
     # Pricing configuration
     pricing_config: Dict[str, Any] = field(default_factory=dict)
     pricing_file: Optional[str] = None
-    pricing_update_interval: int = 3600  # seconds
+    pricing_update_interval: int = 3600  # in seconds
 
     # Endpoints to monitor
     monitored_endpoints: List[str] = field(default_factory=list)
@@ -49,7 +49,7 @@ class TokenTrackerConfig:
 
     # Token counting settings
     tiktoken_enabled: bool = True
-    default_tokens_per_char: float = 0.25  # For estimation
+    default_tokens_per_char: float = 0.25 # estimated
 
     # Performance settings
     async_logging: bool = True
@@ -97,8 +97,12 @@ class TokenTrackerConfig:
 
             # OpenTelemetry (always enabled when tracker is enabled)
             otel_service_name=os.getenv("TOKEN_TRACKER_OTEL_SERVICE_NAME", "token-tracker"),
-            otel_endpoint=os.getenv("TOKEN_TRACKER_OTEL_ENDPOINT", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
-            otel_headers=parse_json(os.getenv("TOKEN_TRACKER_OTEL_HEADERS", os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "{}"))),
+            otel_endpoint=os.getenv(
+              "TOKEN_TRACKER_OTEL_ENDPOINT", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+            ),
+            otel_headers=parse_json(
+              os.getenv("TOKEN_TRACKER_OTEL_HEADERS", os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "{}"))
+            ),
             otel_insecure=parse_bool(os.getenv("TOKEN_TRACKER_OTEL_INSECURE", "true")),
             otel_export_interval=int(os.getenv("TOKEN_TRACKER_OTEL_EXPORT_INTERVAL", "30")),
 
@@ -139,7 +143,7 @@ class TokenTrackerConfig:
         # Load pricing from file if specified
         if config.pricing_file and os.path.exists(config.pricing_file):
             try:
-                with open(config.pricing_file, 'r') as f:
+                with open(config.pricing_file, 'r', encoding="utf-8") as f:
                     file_pricing = json.load(f)
                     config.pricing_config.update(file_pricing)
             except Exception as e:

@@ -1,6 +1,7 @@
 import time
 import json
 import uuid
+import traceback
 from typing import Optional, Dict, Any, List
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -14,7 +15,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp, config=None):
         super().__init__(app)
 
-        # Import here to avoid circular imports
+        # Avoid circular imports
         from .config import TokenTrackerConfig
         from .logger import get_token_logger
 
@@ -32,11 +33,8 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         path = str(request.url.path)
         method = request.method
 
-        # Check if we should track this request
         if not self.config.enabled or not self._should_track(request):
             return await call_next(request)
-
-        # Generate request ID
         request_id = str(uuid.uuid4())
         start_time = time.time()
 
@@ -69,7 +67,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         # Extract user info from request.state._state (for /api/chat/completions)
         if path == "/api/chat/completions":
             if hasattr(request, 'state') and hasattr(request.state, '_state'):
-                state_data = request.state._state  # noqa: SLF001
+                state_data = request.state._state
 
                 # Get metadata from state
                 metadata = state_data.get('metadata', {})
@@ -80,9 +78,10 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     message_id = metadata.get('message_id')
 
                     # Get variables
-                    variables = metadata.get('variables', {})
+                    # Maybe use later on. Keeping it for now
+                    # variables = metadata.get('variables', {})
 
-                    # Cache this info
+                    # Cache so we can use it later.
                     cache_key = f"{req_data.get('model', 'unknown')}"
                     self.request_cache[cache_key] = {
                         'user_id': user_id,
@@ -102,12 +101,10 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                         del self.request_cache[k]
 
 
-        # Special handling for /api/chat/completed endpoint
+        # Handling for /api/chat/completed endpoint
         elif path == "/api/chat/completed":
-            # Try to get user info from cache
             cache_key = f"{req_data.get('model', 'unknown')}"
             cached_info = self.request_cache.get(cache_key, {})
-
             user_id = cached_info.get('user_id')
             chat_id = cached_info.get('chat_id')
             session_id = cached_info.get('session_id')
@@ -116,7 +113,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
             # Get the completion from the request
             messages = req_data.get('messages', [])
 
-            # Extract user message and assistant response
+            # User message and assistant response
             user_message = ""
             assistant_response = ""
 
@@ -127,7 +124,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     assistant_response = msg.get('content', '')
 
             if assistant_response:
-                # Log the token usage - ALWAYS pass the texts for sampling
+                # Log the token usage
                 entry_id = self.logger.log_token_usage(
                     model=req_data.get('model', 'unknown'),
                     prompt_text=user_message,  # Always pass for sampling
@@ -184,7 +181,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             print(f"[TokenTracker] Error processing buffered response: {e}")
-            import traceback
             traceback.print_exc()
 
     async def _process_and_log(
@@ -247,7 +243,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
             if entry_id:
                 print(f"[TokenTracker] Successfully logged with ID: {entry_id}")
             else:
-                print(f"[TokenTracker] Failed to create log entry")
+                print("[TokenTracker] Failed to create log entry")
 
             # Force flush if file logging is enabled
             if self.config.file_logging_enabled:
@@ -255,16 +251,11 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             print(f"[TokenTracker] Error in _process_and_log: {e}")
-            import traceback
             traceback.print_exc()
 
     def _should_track(self, request: Request) -> bool:
         """Check if this request should be tracked"""
         path = str(request.url.path).lower()
-
-        # Debug: Log all POST requests to find the actual streaming endpoint
-        if request.method == "POST":
-            print(f"[TokenTracker Debug] POST request to: {path}")
 
         if request.method != "POST":
             return False
@@ -297,18 +288,16 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                 lines = response_body.split('\n')
                 for line in reversed(lines):
                     line = line.strip()
-                    if line.startswith("data: "):  # FIXED: Complete string literal
+                    if line.startswith("data: "):
                         content = line[6:]  # Remove "data: " prefix
                         if content and content != "[DONE]":
                             try:
                                 chunk = json.loads(content)
-                                # Check for usage data
                                 if "usage" in chunk:
                                     return {
                                         "prompt_tokens": chunk["usage"].get("prompt_tokens"),
                                         "completion_tokens": chunk["usage"].get("completion_tokens")
                                     }
-                                # Check x_groq format
                                 if "x_groq" in chunk and "usage" in chunk["x_groq"]:
                                     usage = chunk["x_groq"]["usage"]
                                     return {
@@ -332,13 +321,12 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     message = data["choices"][0].get("message", {})
                     return message.get("content", "")
             else:
-                # Streaming SSE format
                 parts = []
                 lines = response_body.split('\n')
 
                 for line in lines:
                     line = line.strip()
-                    if line.startswith("data: "):  # Complete string literal
+                    if line.startswith("data: "):
                         content = line[6:]  # Remove "data: " prefix
                         if content and content != "[DONE]":
                             try:
@@ -346,19 +334,16 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                                 if "choices" in chunk and chunk["choices"]:
                                     choice = chunk["choices"][0]
 
-                                    # Check for delta content (streaming)
                                     if "delta" in choice:
                                         delta = choice["delta"]
                                         if "content" in delta:
                                             parts.append(delta["content"])
 
-                                    # Check for message content
                                     elif "message" in choice:
                                         message = choice["message"]
                                         if "content" in message:
                                             parts.append(message["content"])
 
-                                    # Check for direct text field
                                     elif "text" in choice:
                                         parts.append(choice["text"])
 
