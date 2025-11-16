@@ -8,13 +8,19 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.semconv.resource import ResourceAttributes
 
 class TelemetryBackend:
     def __init__(self, config):
         self.config = config
         self.tracer = None
         self.meter = None
+
+        # Initialize metric instruments as None
+        self.token_counter = None
+        self.cost_counter = None
+        self.duration_histogram = None
+
+        # Initialize telemetry
         self._init_telemetry()
 
     def _init_telemetry(self):
@@ -22,8 +28,8 @@ class TelemetryBackend:
         try:
             # Create resource
             resource = Resource.create({
-                ResourceAttributes.SERVICE_NAME: self.config.otel_service_name,
-                ResourceAttributes.SERVICE_VERSION: "1.0.0",
+                "service.name": self.config.otel_service_name,
+                "service.version": "1.0.0",
             })
 
             # Initialize tracing if endpoint configured
@@ -43,10 +49,10 @@ class TelemetryBackend:
                 span_processor = BatchSpanProcessor(otlp_exporter)
                 trace_provider.add_span_processor(span_processor)
 
-                # Get tracer - FIXED: don't pass version as keyword argument
+                # Get tracer
                 self.tracer = trace.get_tracer(
                     self.config.otel_service_name,
-                    "1.0.0"  # Pass version as positional argument
+                    "1.0.0"
                 )
 
                 # Set up metrics
@@ -118,6 +124,10 @@ class TelemetryBackend:
 
         except Exception as e:
             print(f"Failed to create metrics: {e}")
+            # Keep them as None if creation fails
+            self.token_counter = None
+            self.cost_counter = None
+            self.duration_histogram = None
 
     def record_metrics(self, entry: Any):
         """Record metrics from a token usage entry"""
@@ -127,6 +137,7 @@ class TelemetryBackend:
         try:
             # Common attributes
             attributes = {
+                "operation_name": "token-tracker",
                 "model": entry.model,
                 "provider": entry.provider,
                 "endpoint": entry.endpoint or "unknown",
@@ -136,9 +147,17 @@ class TelemetryBackend:
 
             if entry.user_id:
                 attributes["user_id"] = entry.user_id
+            if entry.client_id:
+                attributes["client_id"] = entry.client_id
+
+            # Add whether samples are present (for metrics analysis)
+            if entry.prompt_sample:
+                attributes["has_prompt_sample"] = "true"
+            if entry.completion_sample:
+                attributes["has_completion_sample"] = "true"
 
             # Record token counts
-            if hasattr(self, 'token_counter'):
+            if self.token_counter:
                 self.token_counter.add(
                     entry.prompt_tokens,
                     attributes={**attributes, "token_type": "prompt"}
@@ -149,11 +168,11 @@ class TelemetryBackend:
                 )
 
             # Record cost
-            if hasattr(self, 'cost_counter') and entry.total_cost:
+            if self.cost_counter and entry.total_cost:
                 self.cost_counter.add(entry.total_cost, attributes=attributes)
 
             # Record duration
-            if hasattr(self, 'duration_histogram') and entry.duration_ms:
+            if self.duration_histogram and entry.duration_ms:
                 self.duration_histogram.record(entry.duration_ms, attributes=attributes)
 
         except Exception as e:
@@ -165,21 +184,59 @@ class TelemetryBackend:
             return
 
         try:
+            # Build span attributes
+            span_attributes = {
+               "operation_name": "token-tracker",
+                "model": entry.model,
+                "provider": entry.provider,
+                "prompt_tokens": entry.prompt_tokens,
+                "completion_tokens": entry.completion_tokens,
+                "total_tokens": entry.total_tokens,
+                "streaming": entry.streaming,
+                "token_source": entry.token_source,
+                "endpoint": entry.endpoint or "",
+                "user_id": entry.user_id or "",
+            }
+
+            # Add session and conversation IDs if present
+            if entry.session_id:
+                span_attributes["session_id"] = entry.session_id
+            if entry.conversation_id:
+                span_attributes["conversation_id"] = entry.conversation_id
+            # Set client_id if it exists
+            if entry.client_id:
+                span_attributes["client_id"] = entry.client_id
+            # Add prompt sample if present (truncate for span attributes)
+            if entry.prompt_sample:
+                # Limit to 1000 chars for span attributes
+                span_attributes["prompt_sample"] = entry.prompt_sample[:1000]
+                span_attributes["prompt_sample_length"] = len(entry.prompt_sample)
+
+            # Add completion sample if present (truncate for span attributes)
+            if entry.completion_sample:
+                # Limit to 1000 chars for span attributes
+                span_attributes["completion_sample"] = entry.completion_sample[:1000]
+                span_attributes["completion_sample_length"] = len(entry.completion_sample)
+
+            # Add cost information if present
+            if entry.total_cost:
+                span_attributes["total_cost"] = entry.total_cost
+
             with self.tracer.start_as_current_span(
                 name=f"token_usage.{entry.model}",
-                attributes={
-                    "model": entry.model,
-                    "provider": entry.provider,
-                    "prompt_tokens": entry.prompt_tokens,
-                    "completion_tokens": entry.completion_tokens,
-                    "total_tokens": entry.total_tokens,
-                    "streaming": entry.streaming,
-                    "token_source": entry.token_source,
-                    "endpoint": entry.endpoint or "",
-                    "user_id": entry.user_id or "",
-                }
+                attributes=span_attributes
             ) as span:
-                # Add events
+                # Add event with full samples
+                if entry.prompt_sample or entry.completion_sample:
+                    span.add_event(
+                        "conversation_sample",
+                        attributes={
+                            "prompt": entry.prompt_sample[:2000] if entry.prompt_sample else "",
+                            "completion": entry.completion_sample[:2000] if entry.completion_sample else "",
+                        }
+                    )
+
+                # Add main usage event
                 span.add_event(
                     "token_usage_recorded",
                     attributes={

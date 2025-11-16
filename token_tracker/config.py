@@ -6,8 +6,6 @@ import os
 import json
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from pathlib import Path
-
 
 @dataclass
 class TokenTrackerConfig:
@@ -15,6 +13,7 @@ class TokenTrackerConfig:
 
     # Core settings
     enabled: bool = True
+    client_id: Optional[str] = None
 
     # OpenTelemetry configuration (always on)
     otel_service_name: str = "token-tracker"
@@ -94,6 +93,7 @@ class TokenTrackerConfig:
         # Load configuration from environment
         config = cls(
             enabled=parse_bool(os.getenv("TOKEN_TRACKER_ENABLED", "true")),
+            client_id=os.getenv("TOKEN_TRACKER_CLIENT_ID"),
 
             # OpenTelemetry (always enabled when tracker is enabled)
             otel_service_name=os.getenv("TOKEN_TRACKER_OTEL_SERVICE_NAME", "token-tracker"),

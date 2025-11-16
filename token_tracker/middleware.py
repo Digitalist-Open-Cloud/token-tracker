@@ -81,13 +81,11 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
 
                     # Get variables
                     variables = metadata.get('variables', {})
-                    user_name = variables.get('{{USER_NAME}}', '')
 
                     # Cache this info
                     cache_key = f"{req_data.get('model', 'unknown')}"
                     self.request_cache[cache_key] = {
                         'user_id': user_id,
-                        'user_name': user_name,
                         'chat_id': chat_id,
                         'session_id': session_id,
                         'message_id': message_id,
@@ -103,6 +101,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     for k in keys_to_delete:
                         del self.request_cache[k]
 
+
         # Special handling for /api/chat/completed endpoint
         elif path == "/api/chat/completed":
             # Try to get user info from cache
@@ -110,7 +109,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
             cached_info = self.request_cache.get(cache_key, {})
 
             user_id = cached_info.get('user_id')
-            user_name = cached_info.get('user_name')
             chat_id = cached_info.get('chat_id')
             session_id = cached_info.get('session_id')
             message_id = cached_info.get('message_id')
@@ -129,11 +127,11 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     assistant_response = msg.get('content', '')
 
             if assistant_response:
-                # Log the token usage
+                # Log the token usage - ALWAYS pass the texts for sampling
                 entry_id = self.logger.log_token_usage(
                     model=req_data.get('model', 'unknown'),
-                    prompt_text=user_message,
-                    completion_text=assistant_response,
+                    prompt_text=user_message,  # Always pass for sampling
+                    completion_text=assistant_response,  # Always pass for sampling
                     user_id=user_id,
                     session_id=session_id,
                     conversation_id=chat_id,
@@ -147,7 +145,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                         "message_count": len(messages),
                         "endpoint_type": "completed",
                         "message_id": message_id,
-                        "user_name": user_name,
+                        "client_id": self.config.client_id,
                     }
                 )
 

@@ -1,7 +1,7 @@
 """
 Token Usage Logger Module
 
-Provides logging functionality for tracking AI/LLM token usage,
+Provides functionality for tracking AI/LLM token usage.
 
 """
 
@@ -12,11 +12,10 @@ import threading
 import queue
 import atexit
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Union, Callable
+from typing import Optional, Dict, Any, List, Tuple, Callable
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from enum import Enum
-import hashlib
 import re
 import os
 import tiktoken
@@ -61,6 +60,7 @@ class TokenUsageEntry:
 
     # Optional fields
     user_id: Optional[str] = None
+    client_id: Optional[str] = None
     session_id: Optional[str] = None
     provider: Optional[str] = None
     model_version: Optional[str] = None
@@ -334,7 +334,7 @@ class TokenCounter:
                     count = self._count_with_tiktoken(text, model)
                     return count, TokenSource.TIKTOKEN.value
                 except Exception as e:
-                    logger.debug(f"Tiktoken counting failed: {e}")
+                    logger.debug("Tiktoken counting failed: %s", {e})
 
             # Try custom counter if registered
             if model in self.custom_counters:
@@ -342,7 +342,7 @@ class TokenCounter:
                     count = self.custom_counters[model](text)
                     return count, TokenSource.CUSTOM.value
                 except Exception as e:
-                    logger.debug(f"Custom counter failed: {e}")
+                    logger.debug("Custom counter failed: %s", {e})
 
         # Fallback to estimation
         count = self._estimate_tokens(text)
@@ -359,7 +359,7 @@ class TokenCounter:
             "text-embedding": "cl100k_base",
         }
 
-        # Find appropriate encoding
+        # Find encoding
         encoding_name = None
         for prefix, enc in encoding_map.items():
             if model.startswith(prefix):
@@ -367,7 +367,7 @@ class TokenCounter:
                 break
 
         if not encoding_name:
-            encoding_name = "cl100k_base"  # Default
+            encoding_name = "cl100k_base"
 
         # Cache encodings
         if encoding_name not in self.encodings:
@@ -378,7 +378,6 @@ class TokenCounter:
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count based on text length"""
-        # More sophisticated estimation based on language patterns
 
         # Basic character count
         char_count = len(text)
@@ -389,19 +388,18 @@ class TokenCounter:
         # Adjust for different languages and patterns
         # English: ~4 chars per token, ~0.75 tokens per word
         # Code: ~3 chars per token
-        # Chinese/Japanese: ~2 chars per token
 
         # Detect if text contains significant non-ASCII
         non_ascii_ratio = sum(1 for c in text if ord(c) > 127) / max(char_count, 1)
 
         if non_ascii_ratio > 0.3:
-            # Likely CJK or other non-English
+            # Likely not English or latin language
             estimated = char_count / 2
         elif "```" in text or "def " in text or "function " in text:
             # Likely contains code
             estimated = char_count / 3
         else:
-            # Likely English
+            # Likely English or latin language
             estimated = max(char_count / 4, word_count * 0.75)
 
         return max(1, int(estimated))
@@ -441,8 +439,8 @@ class TokenUsageLogger:
         }
 
         # Initialize storage backends
-        self._init_telemetry_backend()  # Always initialize OpenTelemetry
-        self._init_file_backend()       # Optional file logging
+        self._init_telemetry_backend()
+        self._init_file_backend()
 
         # Start background writer thread
         self.writer_thread = threading.Thread(target=self._background_writer, daemon=True)
@@ -451,7 +449,7 @@ class TokenUsageLogger:
         # Register shutdown handler
         atexit.register(self.shutdown)
 
-        logger.info(f"Token usage logger initialized with {len(self._backends)} backends")
+        logger.info("Token usage logger initialized with %s backends", len(self._backends))
 
     def _init_telemetry_backend(self):
         """Initialize OpenTelemetry backend (always enabled)"""
@@ -460,7 +458,7 @@ class TokenUsageLogger:
             self._telemetry_backend = TelemetryBackend(self.config)
             logger.info("OpenTelemetry backend initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize OpenTelemetry backend: {e}")
+            logger.error("Failed to initialize OpenTelemetry backend: %s", e)
             self._telemetry_backend = None
 
     def _init_file_backend(self):
@@ -472,9 +470,9 @@ class TokenUsageLogger:
                 log_path = Path(self.config.log_file_path)
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 self._file_backend = log_path
-                logger.info(f"File backend initialized: {log_path}")
+                logger.info("File backend initialized: %s", log_path)
             except Exception as e:
-                logger.error(f"Failed to initialize file backend: {e}")
+                logger.error("Failed to initialize file backend: %s", e)
 
     @property
     def _backends(self) -> List[str]:
@@ -563,11 +561,19 @@ class TokenUsageLogger:
             if duration_ms and completion_tokens > 0:
                 tokens_per_second = (completion_tokens / duration_ms) * 1000
 
+            # Set Client id if it exists
+            client_id = None
+            if metadata and "client_id" in metadata:
+                client_id = metadata["client_id"]
+            elif self.config.client_id:
+                client_id = self.config.client_id
+
             # Create entry
             entry = TokenUsageEntry(
                 id=entry_id,
                 timestamp=int(time.time()),
                 user_id=user_id,
+                client_id=client_id,
                 session_id=session_id,
                 model=model,
                 provider=provider,
