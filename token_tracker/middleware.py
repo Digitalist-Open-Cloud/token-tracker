@@ -21,6 +21,9 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         self.config = config or TokenTrackerConfig.from_env()
         self.logger = get_token_logger(self.config)
 
+        # Cache to store user info between related requests
+        self.request_cache = {}
+
         print(f"[TokenTracker] Initialized - Enabled: {self.config.enabled}")
         print(f"[TokenTracker] File logging: {self.config.file_logging_enabled}")
 
@@ -32,8 +35,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         # Check if we should track this request
         if not self.config.enabled or not self._should_track(request):
             return await call_next(request)
-
-        print(f"\n[TokenTracker] Tracking: {method} {path}")
 
         # Generate request ID
         request_id = str(uuid.uuid4())
@@ -48,20 +49,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                 request_body = body_bytes.decode("utf-8")
                 req_data = json.loads(request_body)
 
-                print(f"[TokenTracker] Model: {req_data.get('model', 'unknown')}")
-                print(f"[TokenTracker] Stream: {req_data.get('stream', False)}")
-
-                # Special logging for /api/chat/completed
-                if path == "/api/chat/completed":
-                    messages = req_data.get('messages', [])
-                    print(f"[TokenTracker] /api/chat/completed - {len(messages)} messages")
-                    # The last assistant message contains the completion
-                    for msg in reversed(messages):
-                        if msg.get('role') == 'assistant':
-                            content = msg.get('content', '')
-                            print(f"[TokenTracker] Assistant response length: {len(content)} chars")
-                            break
-
                 # Create new receive that returns the buffered body
                 async def receive():
                     return {
@@ -70,7 +57,7 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                         "more_body": False,
                     }
 
-                request._receive = receive
+                request._receive = receive  # noqa: SLF001
 
             except Exception as e:
                 print(f"[TokenTracker] ERROR capturing request: {e}")
@@ -79,31 +66,56 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         # Call the actual endpoint
         response = await call_next(request)
 
-        # Extract user info from request.state._state
-        user_id = None
-        user_email = None
+        # Extract user info from request.state._state (for /api/chat/completions)
+        if path == "/api/chat/completions":
+            if hasattr(request, 'state') and hasattr(request.state, '_state'):
+                state_data = request.state._state  # noqa: SLF001
 
-        if hasattr(request, 'state') and hasattr(request.state, '_state'):
-            state_data = request.state._state
+                # Get metadata from state
+                metadata = state_data.get('metadata', {})
+                if metadata:
+                    user_id = metadata.get('user_id')
+                    chat_id = metadata.get('chat_id')
+                    session_id = metadata.get('session_id')
+                    message_id = metadata.get('message_id')
 
-            # Get metadata from state
-            metadata = state_data.get('metadata', {})
-            if metadata:
-                user_id = metadata.get('user_id')
-                # Get user name from variables
-                variables = metadata.get('variables', {})
-                user_name = variables.get('{{USER_NAME}}', '')
+                    # Get variables
+                    variables = metadata.get('variables', {})
+                    user_name = variables.get('{{USER_NAME}}', '')
 
-                # For now, use username as email placeholder
-                user_email = user_name if user_name and user_name != 'Admin' else None
+                    # Cache this info
+                    cache_key = f"{req_data.get('model', 'unknown')}"
+                    self.request_cache[cache_key] = {
+                        'user_id': user_id,
+                        'user_name': user_name,
+                        'chat_id': chat_id,
+                        'session_id': session_id,
+                        'message_id': message_id,
+                        'timestamp': time.time()
+                    }
 
-                print(f"[TokenTracker] User extracted - ID: {user_id}, Name: {user_name}")
+                    # Clean old cache entries
+                    current_time = time.time()
+                    keys_to_delete = [
+                        k for k, v in self.request_cache.items()
+                        if current_time - v.get('timestamp', 0) > 60
+                    ]
+                    for k in keys_to_delete:
+                        del self.request_cache[k]
 
         # Special handling for /api/chat/completed endpoint
-        if path == "/api/chat/completed":
-            print(f"[TokenTracker] Processing /api/chat/completed")
+        elif path == "/api/chat/completed":
+            # Try to get user info from cache
+            cache_key = f"{req_data.get('model', 'unknown')}"
+            cached_info = self.request_cache.get(cache_key, {})
 
-            # Get the completion from the request (not response)
+            user_id = cached_info.get('user_id')
+            user_name = cached_info.get('user_name')
+            chat_id = cached_info.get('chat_id')
+            session_id = cached_info.get('session_id')
+            message_id = cached_info.get('message_id')
+
+            # Get the completion from the request
             messages = req_data.get('messages', [])
 
             # Extract user message and assistant response
@@ -117,99 +129,30 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                     assistant_response = msg.get('content', '')
 
             if assistant_response:
-                print(f"[TokenTracker] Found completion to log: {len(assistant_response)} chars")
-
-                # Check the response body for any token usage info
-                if hasattr(response, 'body'):
-                    try:
-                        response_text = response.body.decode("utf-8", errors="ignore")
-                        print(f"[TokenTracker] /api/chat/completed response: {response_text[:500]}")
-
-                        # Try to parse response for token info
-                        try:
-                            resp_data = json.loads(response_text)
-                            # Check if there's usage info in the response
-                            if 'usage' in resp_data:
-                                print(f"[TokenTracker] Found usage in response: {resp_data['usage']}")
-                        except:
-                            pass
-                    except:
-                        response_text = ""
-                else:
-                    response_text = ""
-
                 # Log the token usage
                 entry_id = self.logger.log_token_usage(
                     model=req_data.get('model', 'unknown'),
                     prompt_text=user_message,
                     completion_text=assistant_response,
                     user_id=user_id,
-                    user_email=user_email,
+                    session_id=session_id,
+                    conversation_id=chat_id,
                     endpoint=path,
                     request_id=request_id,
                     duration_ms=(time.time() - start_time) * 1000,
-                    streaming=False,  # This endpoint is after streaming completes
+                    streaming=False,
                     temperature=req_data.get('temperature'),
                     max_tokens=req_data.get('max_tokens'),
                     metadata={
                         "message_count": len(messages),
-                        "endpoint_type": "completed"
+                        "endpoint_type": "completed",
+                        "message_id": message_id,
+                        "user_name": user_name,
                     }
                 )
 
-                if entry_id:
-                    print(f"[TokenTracker] Successfully logged completion: {entry_id}")
-
-                # Force flush
                 if self.config.file_logging_enabled:
                     self.logger.flush()
-
-            return response
-
-        # Skip the task creation response from /api/chat/completions
-        if path == "/api/chat/completions" and hasattr(response, 'body'):
-            try:
-                body_text = response.body.decode("utf-8", errors="ignore")
-                if '"task_id"' in body_text and len(body_text) < 200:
-                    print(f"[TokenTracker] Skipping task creation response")
-                    return response
-            except:
-                pass
-
-        # Check if it's a streaming response (for other endpoints)
-        is_streaming_response = hasattr(response, 'body_iterator') and req_data.get('stream', False)
-
-        if is_streaming_response:
-            print(f"[TokenTracker] Handling STREAMING response")
-
-            # ... (rest of streaming handler code stays the same)
-            # But we probably won't need it since real completion is in /api/chat/completed
-
-        else:
-            # Non-streaming response
-            print(f"[TokenTracker] Handling NON-STREAMING response")
-
-            # Only process non-/api/chat/completed endpoints here
-            if path != "/api/chat/completed":
-                try:
-                    if hasattr(response, 'body'):
-                        response_body = response.body
-                        if response_body and req_data:
-                            response_text = response_body.decode("utf-8", errors="ignore")
-
-                            await self._process_and_log(
-                                response_body=response_text,
-                                req_data=req_data,
-                                endpoint=path,
-                                user_id=user_id,
-                                user_email=user_email,
-                                duration_ms=(time.time() - start_time) * 1000,
-                                request_id=request_id
-                            )
-                except Exception as e:
-                    print(f"[TokenTracker] Error processing response: {e}")
-                    import traceback
-                    traceback.print_exc()
 
         return response
 
@@ -219,7 +162,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         req_data: dict,
         endpoint: str,
         user_id: Optional[str],
-        user_email: Optional[str],
         start_time: float,
         request_id: str
     ):
@@ -238,7 +180,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                 req_data=req_data,
                 endpoint=endpoint,
                 user_id=user_id,
-                user_email=user_email,
                 duration_ms=duration_ms,
                 request_id=request_id
             )
@@ -254,7 +195,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
         req_data: dict,
         endpoint: str,
         user_id: Optional[str],
-        user_email: Optional[str],
         duration_ms: float,
         request_id: str
     ):
@@ -292,7 +232,6 @@ class TokenUsageMiddleware(BaseHTTPMiddleware):
                 prompt_text=prompt_text if not token_counts.get("prompt_tokens") else None,
                 completion_text=completion_text if not token_counts.get("completion_tokens") else None,
                 user_id=user_id,
-                user_email=user_email,
                 endpoint=endpoint,
                 request_id=request_id,
                 duration_ms=duration_ms,

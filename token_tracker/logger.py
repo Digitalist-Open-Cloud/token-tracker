@@ -61,8 +61,6 @@ class TokenUsageEntry:
 
     # Optional fields
     user_id: Optional[str] = None
-    user_email: Optional[str] = None
-    user_ip: Optional[str] = None
     session_id: Optional[str] = None
     provider: Optional[str] = None
     model_version: Optional[str] = None
@@ -496,8 +494,6 @@ class TokenUsageLogger:
         prompt_text: Optional[str] = None,
         completion_text: Optional[str] = None,
         user_id: Optional[str] = None,
-        user_email: Optional[str] = None,
-        user_ip: Optional[str] = None,
         session_id: Optional[str] = None,
         endpoint: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -572,8 +568,6 @@ class TokenUsageLogger:
                 id=entry_id,
                 timestamp=int(time.time()),
                 user_id=user_id,
-                user_email=user_email,
-                user_ip=user_ip,
                 session_id=session_id,
                 model=model,
                 provider=provider,
