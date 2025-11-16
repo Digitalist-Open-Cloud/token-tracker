@@ -1,12 +1,12 @@
 """
 Token Tracker - AI/LLM Token Usage Tracking Library
 
-A comprehensive solution for tracking token usage, costs, and performance
-metrics for AI/LLM applications.
+A  solution for tracking token usage, costs, and performance
+metrics for Open Web UI.
 """
 
-__version__ = "0.1.0"
-__author__ = "Your Name"
+__version__ = "0.0.1a1"
+__author__ = "Mikke Schirén"
 
 from .config import TokenTrackerConfig
 from .exceptions import (
