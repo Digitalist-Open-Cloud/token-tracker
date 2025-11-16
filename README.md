@@ -2,10 +2,6 @@
 
 Token Tracker is a Python module for tracking token usage in Open Web UI. It provides comprehensive monitoring of token consumption, costs, and performance metrics across different LLM providers. The data can be exported to OpenTelemetry-compatible systems or logged to files for analysis.
 
-## Environment variables
-
-Token Tracker is highly configurable with environment variables.
-
 ## WIP
 
 This is still alpha. Some referenced settings doesn't work yet, specially redacting PII  (`TOKEN_TRACKER_REDACT_PII`) and hash user id's (`TOKEN_TRACKER_HASH_USER_IDS`)
@@ -16,9 +12,32 @@ This is still alpha. Some referenced settings doesn't work yet, specially redact
 pip install token-tracker
 ```
 
+Then you need to add Token Tracker to `backend/open_webui/main.py`:
+
+```python
+# Add after OPENTELEMETRY section
+########################################
+#
+# TOKEN TRACKER
+#
+########################################
+try:
+    from token_tracker.middleware import TokenUsageMiddleware
+    from token_tracker.config import TokenTrackerConfig
+
+    config = TokenTrackerConfig.from_env()
+    if config.enabled:
+        app.add_middleware(TokenUsageMiddleware, config=config)
+        log.info("Token tracking middleware enabled")
+    else:
+        log.info("Token tracking disabled")
+except ImportError as e:
+    log.error("Token tracker not available: %s", e)
+```
+
 ## Configuration
 
-Token Tracker is highly configurable through environment variables. Here's a complete guide to setting up and using the module.
+Token Tracker is highly configurable through environment variables.
 
 ### Core Configuration
 
@@ -147,13 +166,16 @@ TOKEN_TRACKER_PRICE_ANTHROPIC_CLAUDE3OPUS_COMPLETION=0.075
 
 ### 3. Using JSON in Environment Variable
 
-For more complex configurations, you can provide JSON directly:
+You can also provide JSON directly:
 
 ```bash
 TOKEN_TRACKER_PRICING_JSON='{"openai":{"gpt-4":{"prompt":0.03,"completion":0.06}}}'
 ```
 
 ## Usage Examples
+
+There is no guarantees, but Token Tracker could be added to other projects
+then Open WebUI, at least if they are using Fast API.
 
 ### Basic Integration with FastAPI
 
