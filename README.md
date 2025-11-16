@@ -8,8 +8,13 @@ This is still alpha. Some referenced settings doesn't work yet, specially redact
 
 ## Installation
 
-```bash
-pip install token-tracker
+Copy source to your environment. For Open Web UI, place the source in backend dir,
+install Open Web UI first, after that:
+
+```shell
+RUN pip3 install --no-cache-dir -e ./token-tracker && \
+    # Verify installation
+    python3 -c "import token_tracker; print('Token tracker installed successfully')"
 ```
 
 Then you need to add Token Tracker to `backend/open_webui/main.py`:
@@ -37,7 +42,7 @@ except ImportError as e:
 
 ## Configuration
 
-Token Tracker is highly configurable through environment variables.
+Token Tracker is configurable through environment variables.
 
 ### Core Configuration
 
@@ -121,6 +126,8 @@ Default monitored endpoints:
 
 ### Privacy Configuration
 
+These are placeholders, not working at the moment.
+
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
 | `TOKEN_TRACKER_REDACT_PII` | Redact personally identifiable information | `false` |
@@ -128,7 +135,7 @@ Default monitored endpoints:
 
 ## Setting Up Cost Profiles
 
-Token Tracker supports detailed cost tracking for different models and providers. There are three ways to configure pricing:
+Token Tracker supports cost tracking for different models and providers. There are three ways to configure pricing:
 
 ### 1. Using a JSON Configuration File
 
@@ -166,7 +173,7 @@ TOKEN_TRACKER_PRICE_ANTHROPIC_CLAUDE3OPUS_COMPLETION=0.075
 
 ### 3. Using JSON in Environment Variable
 
-You can also provide JSON directly:
+You can also provide JSON directly, if you like to complicate things 🙂.
 
 ```bash
 TOKEN_TRACKER_PRICING_JSON='{"openai":{"gpt-4":{"prompt":0.03,"completion":0.06}}}'
@@ -175,7 +182,8 @@ TOKEN_TRACKER_PRICING_JSON='{"openai":{"gpt-4":{"prompt":0.03,"completion":0.06}
 ## Usage Examples
 
 There is no guarantees, but Token Tracker could be added to other projects
-then Open WebUI, at least if they are using Fast API.
+then Open WebUI, at least if they are using Fast API. But this have not
+been tested.
 
 ### Basic Integration with FastAPI
 
