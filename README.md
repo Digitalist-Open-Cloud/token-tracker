@@ -4,7 +4,9 @@ Token Tracker is a Python module for tracking token usage in Open Web UI. It pro
 
 ## WIP
 
-This is still alpha. Some referenced settings doesn't work yet, specially redacting PII  (`TOKEN_TRACKER_REDACT_PII`) and hash user id's (`TOKEN_TRACKER_HASH_USER_IDS`)
+This is still in development, and should be considered as early alpha. Some referenced settings doesn't work yet, specially redacting PII  (`TOKEN_TRACKER_REDACT_PII`) and hash user id's (`TOKEN_TRACKER_HASH_USER_IDS`)
+
+When project is ready for alpha, there will be a release.
 
 ## Installation
 
@@ -72,6 +74,9 @@ Token Tracker is configurable through environment variables.
 
 ### Storage Configuration
 
+You can store user inputs and the answers, setting `TOKEN_TRACKER_STORE_SAMPLES` to true. But think of privacy concerns before doing so. And also make sure you tell the
+users that you are doing this.
+
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
 | `TOKEN_TRACKER_MAX_BODY_SIZE` | Maximum request body size to process | `10485760` (10MB) |
@@ -87,6 +92,8 @@ Token Tracker is configurable through environment variables.
 | `TOKEN_TRACKER_TRACK_PERFORMANCE` | Track performance metrics | `true` |
 
 ### Pricing Configuration
+
+If you provide a `TOKEN_TRACKER_PRICING_FILE` - it needs to be in utf8.
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|

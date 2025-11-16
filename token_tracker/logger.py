@@ -237,7 +237,7 @@ class PricingManager:
             # Get provider pricing
             provider_pricing = self.pricing_cache.get(provider.lower(), {})
             if not provider_pricing:
-                logger.debug(f"No pricing found for provider: {provider}")
+                logger.debug("No pricing found for provider: %s", provider)
                 return None
 
             # Find model pricing

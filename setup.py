@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="token-tracker",
-    version="0.1.0",
+    version="0.0.1a1",
     author="Mikke Schirén",
     description="Token usage tracking with OpenTelemetry for Open WebUI",
     long_description=long_description,
